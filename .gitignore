@@ -1,0 +1,16 @@
+
+### macOS ###
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# CMake
+cmake-build-*/
+
+# Clion
+.idea
+
