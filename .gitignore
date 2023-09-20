@@ -14,3 +14,14 @@ cmake-build-*/
 # Clion
 .idea
 
+### C ###
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+main
+
