@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
+#include <ncurses.h>
 
 #define     DEBUG 1u
 #define     BUFF_SIZE 256
@@ -70,9 +72,13 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, uint8_t * pCpuNum){
 
         uint8_t buffer_arr[MAX_CORES_NUM][BUFF_SIZE] = {0};
         uint8_t buffer[BUFF_SIZE] = {0};
+        uint8_t cpu_number = *pCpuNum;
 
+        if(program_state == INIT){
+            *pCpuNum = 0;
+        }
 
-        for(int i = 0; i < *pCpuNum; i ++){
+        for(int i = 0; i < cpu_number; i ++){
             ret = fgets(buffer, sizeof(buffer) - 1, fp);
             if (ret == NULL) {
                 error_handler();
@@ -145,26 +151,42 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu,
 
 static void print_cpuStats(cpu_stats_object_t * pCpuStats,
                            uint8_t * pCpuNum){
+    int ret = {0};
+    printw("%-10s %-10s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
+    cpu_stats_calc_t *  pCpuCalc = {0};
+    pCpuCalc = &pCpuStats[0].cpuStats_view;
 
-    printf("%-10s %-10s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
-    cpu_stats_calc_t * pCpuCalc = {0};
-    for(int i = 0; i < pCpuNum; i++) {
+    printw("\rcpu%-10s %-10s %-10.2f %-10.2f \n", "", &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
+           &pCpuCalc->nonIdleCurr);
+
+
+    for(uint8_t i=1; i <  *pCpuNum; i++) {
         pCpuCalc = &pCpuStats[i].cpuStats_view;
-        printf("cpu%-10d %-10d %-10d %-10.2f \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc, pCpuCalc->nonIdleCurr);
+        printw("\rcpu%-10u %-10s %-10.2f %-10.2f \n", i, &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
+               &pCpuCalc->nonIdleCurr);
+
     }
+
+    move(0,0);
+    refresh();
 }
 int main(void) {
     errno = 0;
     uint8_t  cpu_num = MAX_CORES_NUM;
     cpu_stats_object_t *  CpuStats = {0};
+
+    initscr();
     for(;;){
         load_cpuStats(CpuStats, &cpu_num);
         if(program_state == INIT){
             CpuStats = (cpu_stats_object_t *)malloc(sizeof(cpu_stats_object_t) * cpu_num);
         }
         calculate_cpuStats(CpuStats, &cpu_num);
-        //print_cpuStats(&CpuStats, &cpu_num);
-    }
+        print_cpuStats(CpuStats, &cpu_num);
 
+        sleep(1);
+
+    }
+    endwin();
     return 0;
 }
