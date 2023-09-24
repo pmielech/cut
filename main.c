@@ -6,6 +6,8 @@
 #include <math.h>
 #include <unistd.h>
 #include <ncurses.h>
+#include <signal.h>
+
 
 #define     DEBUG 1u
 #define     BUFF_SIZE 256
@@ -48,7 +50,14 @@ typedef struct cpu_stats_object{
     cpu_stats_calc_t cpuStats_view;
 } cpu_stats_object_t;
 
-prog_state_t program_state = INIT;
+static volatile prog_state_t program_state = INIT;
+static volatile sig_atomic_t isSigTerm = 0;
+
+static void sigTerm_handler(int signum){
+    if(signum > 0){
+        isSigTerm = 1;
+    }
+}
 
 static void error_handler(void){
     // temporary error handler for debug purposes
@@ -56,7 +65,7 @@ static void error_handler(void){
     exit(errno);
 }
 
-static void load_cpuStats(cpu_stats_object_t * pCpuStats, uint8_t * pCpuNum){
+static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
     char* ret = {0};
     FILE *fp = {0};
     cpu_stats_raw_t *pCpuRaw = {0};
@@ -111,8 +120,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, uint8_t * pCpuNum){
     return;
 }
 
-static void calculate_cpuStats(cpu_stats_object_t * pCpu,
-                               uint8_t * pCpuNum){
+static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCpuNum){
     cpu_stats_raw_t  * pCpuRaw = {0};
     cpu_stats_raw_t * pCpuPrev = {0};
     cpu_stats_calc_t * pCpuCalc = {0};
@@ -149,16 +157,13 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu,
     }
 }
 
-static void print_cpuStats(cpu_stats_object_t * pCpuStats,
-                           uint8_t * pCpuNum){
-    int ret = {0};
+static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
     printw("%-10s %-10s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
     cpu_stats_calc_t *  pCpuCalc = {0};
     pCpuCalc = &pCpuStats[0].cpuStats_view;
 
     printw("\rcpu%-10s %-10s %-10.2f %-10.2f \n", "", &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
            &pCpuCalc->nonIdleCurr);
-
 
     for(uint8_t i=1; i <  *pCpuNum; i++) {
         pCpuCalc = &pCpuStats[i].cpuStats_view;
@@ -171,22 +176,29 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats,
     refresh();
 }
 int main(void) {
+    struct sigaction sigTerm_action = {0};
+    memset(&sigTerm_action, 0, sizeof(struct sigaction));
+    sigTerm_action.sa_handler = sigTerm_handler;
+    sigaction(SIGTERM, &sigTerm_action, NULL);
+    sigaction(SIGINT, &sigTerm_action, NULL);
+
     errno = 0;
-    uint8_t  cpu_num = MAX_CORES_NUM;
+    volatile uint8_t cpu_num = 12u;
     cpu_stats_object_t *  CpuStats = {0};
 
     initscr();
-    for(;;){
+    while(!isSigTerm){
         load_cpuStats(CpuStats, &cpu_num);
         if(program_state == INIT){
             CpuStats = (cpu_stats_object_t *)malloc(sizeof(cpu_stats_object_t) * cpu_num);
         }
         calculate_cpuStats(CpuStats, &cpu_num);
         print_cpuStats(CpuStats, &cpu_num);
-
         sleep(1);
 
     }
     endwin();
+    printf("\r\nProgram terminated.\n");
+    free(CpuStats);
     return 0;
 }
