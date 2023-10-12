@@ -7,9 +7,12 @@
 #include <unistd.h>
 #include <ncurses.h>
 #include <signal.h>
+#include <dirent.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
-
-#define     DEBUG 1u
+#define     DEBUG 0u
 #define     BUFF_SIZE 256
 #define     MAX_CORES_NUM 12
 
@@ -32,15 +35,15 @@
 } cpu_stats_raw_t;
 
 typedef struct cpu_stats_calc{
-    float idlePrev;
-    float idleCurr;
-    float nonIdlePrev;
-    float nonIdleCurr;
-    float totalPrev;
-    float totalCurr;
-    float totalCalc;
-    float idleCalc;
-    uint8_t cpuPercentage;
+    uint32_t idlePrev;
+    uint32_t idleCurr;
+    uint32_t nonIdlePrev;
+    uint32_t nonIdleCurr;
+    uint32_t totalPrev;
+    uint32_t totalCurr;
+    uint32_t totalCalc;
+    uint32_t idleCalc;
+    double cpuPercentage;
 
 } cpu_stats_calc_t;
 
@@ -52,6 +55,7 @@ typedef struct cpu_stats_object{
 
 static volatile prog_state_t program_state = INIT;
 static volatile sig_atomic_t isSigTerm = 0;
+static int loop_counter = 0;
 
 static void sigTerm_handler(int signum){
     if(signum > 0){
@@ -61,24 +65,25 @@ static void sigTerm_handler(int signum){
 
 static void error_handler(void){
     // temporary error handler for debug purposes
+    endwin();
     perror("");
     exit(errno);
 }
 
 static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
-    char* ret = {0};
-    FILE *fp = {0};
+    char* ret = 0;
     cpu_stats_raw_t *pCpuRaw = {0};
+    FILE *fp;
+
 #if DEBUG != 1u
     fp = fopen("/proc/stat", "r");
 #else
     fp = fopen("/Users/patryk/github/cut/test_path/stat", "r");
-#endif
 
-    if(fp == NULL && errno > 0){
+#endif
+    if(fp < 0 && errno > 0){
         error_handler();
     } else{
-
         uint8_t buffer_arr[MAX_CORES_NUM][BUFF_SIZE] = {0};
         uint8_t buffer[BUFF_SIZE] = {0};
         uint8_t cpu_number = *pCpuNum;
@@ -88,8 +93,8 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
         }
 
         for(int i = 0; i < cpu_number; i ++){
-            ret = fgets(buffer, sizeof(buffer) - 1, fp);
-            if (ret == NULL) {
+            ret = fgets(buffer, sizeof(buffer), fp);
+            if (ret < 0) {
                 error_handler();
             }
 
@@ -110,7 +115,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
         for(int i = 0; i < *pCpuNum; i++){
             pCpuRaw = &pCpuStats[i].cpuStats_raw;
 
-            sscanf(buffer_arr[i] + 5,
+            scanf(buffer_arr[i] + 5,
                    " %u %u %u %u %u %u %u %u %u %u",
                    &pCpuRaw->user, &pCpuRaw->nice, &pCpuRaw->system, &pCpuRaw->idle,
                    &pCpuRaw->ioWait, &pCpuRaw->irq, &pCpuRaw->softIrq, &pCpuRaw->steal,
@@ -125,7 +130,7 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
     cpu_stats_raw_t * pCpuPrev = {0};
     cpu_stats_calc_t * pCpuCalc = {0};
 
-        for(int i = 0; i < *pCpuNum; i++) {
+        for(int i = 0; i < *pCpuNum ; i++) {
 
             pCpuRaw = &pCpu[0].cpuStats_raw;
             pCpuPrev = &pCpu[0].cpuStats_prev;
@@ -133,23 +138,24 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
             if(program_state != INIT) {
                 pCpuCalc = &pCpu[0].cpuStats_view;
 
-                pCpuCalc->idlePrev = pCpuPrev->idle + pCpuPrev->ioWait;
-                pCpuCalc->idleCurr = pCpuRaw->idle + pCpuRaw->ioWait;
+                pCpuCalc->idlePrev = (pCpuPrev->idle + pCpuPrev->ioWait);
+                pCpuCalc->idleCurr = (pCpuRaw->idle + pCpuRaw->ioWait);
 
-                pCpuCalc->nonIdlePrev = pCpuPrev->user + pCpuPrev->nice + pCpuPrev->system +
-                                        pCpuPrev->irq + pCpuPrev->softIrq + pCpuPrev->steal;
+                pCpuCalc->nonIdlePrev = (pCpuPrev->user + pCpuPrev->nice + pCpuPrev->system +
+                                        pCpuPrev->irq + pCpuPrev->softIrq + pCpuPrev->steal);
 
-                pCpuCalc->nonIdleCurr = pCpuRaw->user + pCpuRaw->nice + pCpuRaw->system + pCpuRaw->irq +
-                                        pCpuRaw->softIrq + pCpuRaw->steal;
+                pCpuCalc->nonIdleCurr = (pCpuRaw->user + pCpuRaw->nice + pCpuRaw->system + pCpuRaw->irq +
+                                        pCpuRaw->softIrq + pCpuRaw->steal);
 
                 pCpuCalc->totalPrev = pCpuCalc->idlePrev + pCpuCalc->nonIdlePrev;
                 pCpuCalc->totalCurr = pCpuCalc->idleCurr + pCpuCalc->nonIdleCurr;
 
                 pCpuCalc->totalCalc = pCpuCalc->totalCurr - pCpuCalc->totalPrev;
                 pCpuCalc->idleCalc = pCpuCalc->idleCurr - pCpuCalc->idlePrev;
-                pCpuCalc->cpuPercentage = (uint8_t)roundf((pCpuCalc->totalCalc - pCpuCalc->idleCalc)
-                                            / pCpuCalc->totalCalc) * 100;
-
+                if(pCpuCalc->totalCalc != 0){
+                    pCpuCalc->cpuPercentage = ((double )pCpuCalc->totalCalc - (double )pCpuCalc->idleCalc)* 100.0
+                                                / (double )pCpuCalc->totalCalc;
+                }
             } else{
                 program_state = WORK;
             }
@@ -158,16 +164,18 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
 }
 
 static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
+   
+    printw("%d\n\r", loop_counter++);
     printw("%-10s %-10s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
     cpu_stats_calc_t *  pCpuCalc = {0};
     pCpuCalc = &pCpuStats[0].cpuStats_view;
 
-    printw("\rcpu%-10s %-10s %-10.2f %-10.2f \n", "", &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
+    printw("\rcpu%-10s %-10.4f %-10u %-10u \n", "", &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
            &pCpuCalc->nonIdleCurr);
 
     for(uint8_t i=1; i <  *pCpuNum; i++) {
         pCpuCalc = &pCpuStats[i].cpuStats_view;
-        printw("\rcpu%-10u %-10s %-10.2f %-10.2f \n", i, &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
+        printw("\rcpu%-10u %-10.4f %-10u %-10u \n", i, &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
                &pCpuCalc->nonIdleCurr);
 
     }
@@ -176,6 +184,7 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pC
     refresh();
 }
 int main(void) {
+    fd_set inp; FD_ZERO(&inp); FD_SET(STDIN_FILENO,&inp);
     struct sigaction sigTerm_action = {0};
     memset(&sigTerm_action, 0, sizeof(struct sigaction));
     sigTerm_action.sa_handler = sigTerm_handler;
@@ -185,16 +194,24 @@ int main(void) {
     errno = 0;
     volatile uint8_t cpu_num = 12u;
     cpu_stats_object_t *  CpuStats = {0};
-
     initscr();
     while(!isSigTerm){
         load_cpuStats(CpuStats, &cpu_num);
+        if(errno > 0){
+            error_handler();
+        }
         if(program_state == INIT){
-            CpuStats = (cpu_stats_object_t *)malloc(sizeof(cpu_stats_object_t) * cpu_num);
+            CpuStats = (cpu_stats_object_t *)malloc((sizeof(cpu_stats_object_t)+2) * cpu_num);
         }
         calculate_cpuStats(CpuStats, &cpu_num);
+        if(errno > 0){
+            error_handler();
+        }
         print_cpuStats(CpuStats, &cpu_num);
-        sleep(1);
+        if(errno > 0){
+            error_handler();
+        }
+        select(1,&inp,0,0,&(struct timeval){.tv_sec=5});
 
     }
     endwin();
