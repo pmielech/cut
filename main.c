@@ -115,7 +115,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
         for(int i = 0; i < *pCpuNum; i++){
             pCpuRaw = &pCpuStats[i].cpuStats_raw;
 
-            scanf(buffer_arr[i] + 5,
+            sscanf(buffer_arr[i] + 5,
                    " %u %u %u %u %u %u %u %u %u %u",
                    &pCpuRaw->user, &pCpuRaw->nice, &pCpuRaw->system, &pCpuRaw->idle,
                    &pCpuRaw->ioWait, &pCpuRaw->irq, &pCpuRaw->softIrq, &pCpuRaw->steal,
@@ -131,12 +131,14 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
     cpu_stats_calc_t * pCpuCalc = {0};
 
         for(int i = 0; i < *pCpuNum ; i++) {
-
-            pCpuRaw = &pCpu[0].cpuStats_raw;
-            pCpuPrev = &pCpu[0].cpuStats_prev;
+//
+//            pCpuPrev = &pCpu[0].cpuStats_prev;
+//            pCpuRaw = &pCpu[0].cpuStats_raw;
 
             if(program_state != INIT) {
-                pCpuCalc = &pCpu[0].cpuStats_view;
+                pCpuCalc = &pCpu[i].cpuStats_view;
+                pCpuRaw = &pCpu[i].cpuStats_raw;
+                pCpuPrev = &pCpu[i].cpuStats_prev;
 
                 pCpuCalc->idlePrev = (pCpuPrev->idle + pCpuPrev->ioWait);
                 pCpuCalc->idleCurr = (pCpuRaw->idle + pCpuRaw->ioWait);
@@ -166,18 +168,17 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
 static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
    
     printw("%d\n\r", loop_counter++);
-    printw("%-10s %-10s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
+    printw("%-12s %-12s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
     cpu_stats_calc_t *  pCpuCalc = {0};
     pCpuCalc = &pCpuStats[0].cpuStats_view;
 
-    printw("\rcpu%-10s %-10.4f %-10u %-10u \n", "", &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
-           &pCpuCalc->nonIdleCurr);
+    printw("\rcpu%-10s %-10.2f %-10u %-10u \n", "", pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
+           pCpuCalc->nonIdleCurr);
 
     for(uint8_t i=1; i <  *pCpuNum; i++) {
         pCpuCalc = &pCpuStats[i].cpuStats_view;
-        printw("\rcpu%-10u %-10.4f %-10u %-10u \n", i, &pCpuCalc->cpuPercentage, &pCpuCalc->idleCalc,
-               &pCpuCalc->nonIdleCurr);
-
+        printw("\rcpu%-10u %-10.2f %-10u %-10u \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
+               pCpuCalc->nonIdleCurr);
     }
 
     move(0,0);
@@ -196,13 +197,17 @@ int main(void) {
     cpu_stats_object_t *  CpuStats = {0};
     initscr();
     while(!isSigTerm){
+    //for(int i = 0; i < 10; i++){
         load_cpuStats(CpuStats, &cpu_num);
         if(errno > 0){
             error_handler();
         }
         if(program_state == INIT){
-            CpuStats = (cpu_stats_object_t *)malloc((sizeof(cpu_stats_object_t)+2) * cpu_num);
-        }
+            CpuStats = (cpu_stats_object_t *)malloc((sizeof(cpu_stats_object_t)) * cpu_num);
+            memset(CpuStats, 0, cpu_num * sizeof(cpu_stats_object_t));
+            program_state = WORK;
+        } else {
+
         calculate_cpuStats(CpuStats, &cpu_num);
         if(errno > 0){
             error_handler();
@@ -211,8 +216,9 @@ int main(void) {
         if(errno > 0){
             error_handler();
         }
-        select(1,&inp,0,0,&(struct timeval){.tv_sec=5});
-
+        }
+        select(1,&inp,0,0,&(struct timeval){.tv_sec=1});
+        //sleep(1);
     }
     endwin();
     printf("\r\nProgram terminated.\n");
