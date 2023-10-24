@@ -55,7 +55,6 @@ typedef struct cpu_stats_object{
 
 static volatile prog_state_t program_state = INIT;
 static volatile sig_atomic_t isSigTerm = 0;
-static int loop_counter = 0;
 
 static void sigTerm_handler(int signum){
     if(signum > 0){
@@ -84,9 +83,11 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
     if(fp < 0 && errno > 0){
         error_handler();
     } else{
-        uint8_t buffer_arr[MAX_CORES_NUM][BUFF_SIZE] = {0};
-        uint8_t buffer[BUFF_SIZE] = {0};
         uint8_t cpu_number = *pCpuNum;
+        uint8_t buffer_arr[cpu_number][BUFF_SIZE];
+        memset(buffer_arr, 0, sizeof(buffer_arr));
+
+        uint8_t buffer[BUFF_SIZE] = {0};
 
         if(program_state == INIT){
             *pCpuNum = 0;
@@ -98,7 +99,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
                 error_handler();
             }
 
-            ret = strncmp(buffer, "cpu", 3) == 0 ? strncpy(buffer_arr[i], buffer, sizeof(buffer) - 1) : 0;
+            ret = strncmp(buffer, "cpu", 3) == 0 ? strncpy(buffer_arr[i], buffer, sizeof(buffer)) : 0;
             if (ret == 0) {
                 break;
             }
@@ -121,6 +122,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
                    &pCpuRaw->ioWait, &pCpuRaw->irq, &pCpuRaw->softIrq, &pCpuRaw->steal,
                    &pCpuRaw->guest, &pCpuRaw->guestNice);
         }
+        //free(buffer_arr);
     }
     return;
 }
@@ -131,10 +133,6 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
     cpu_stats_calc_t * pCpuCalc = {0};
 
         for(int i = 0; i < *pCpuNum ; i++) {
-//
-//            pCpuPrev = &pCpu[0].cpuStats_prev;
-//            pCpuRaw = &pCpu[0].cpuStats_raw;
-
             if(program_state != INIT) {
                 pCpuCalc = &pCpu[i].cpuStats_view;
                 pCpuRaw = &pCpu[i].cpuStats_raw;
@@ -166,8 +164,6 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
 }
 
 static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
-   
-    printw("%d\n\r", loop_counter++);
     printw("%-12s %-12s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
     cpu_stats_calc_t *  pCpuCalc = {0};
     pCpuCalc = &pCpuStats[0].cpuStats_view;
@@ -180,12 +176,12 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pC
         printw("\rcpu%-10u %-10.2f %-10u %-10u \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
                pCpuCalc->nonIdleCurr);
     }
-
     move(0,0);
     refresh();
 }
 int main(void) {
-    fd_set inp; FD_ZERO(&inp); FD_SET(STDIN_FILENO,&inp);
+    fd_set inp; FD_ZERO(&inp); FD_SET(STDIN_FILENO,&inp); // select func
+
     struct sigaction sigTerm_action = {0};
     memset(&sigTerm_action, 0, sizeof(struct sigaction));
     sigTerm_action.sa_handler = sigTerm_handler;
