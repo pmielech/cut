@@ -11,12 +11,19 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <string.h>
+#include <time.h>
 
-#define     DEBUG 0u
+#define     DEBUG 1u
 #define     BUFF_SIZE 256
 #define     MAX_CORES_NUM 12
+#define     LOG_DIR "logs"
+#define     __LOG_PATH__  "logs/log.txt"
+#define     LOG_BUFF_SIZE 50
+#define     RE_WR_EX S_IREAD | S_IWRITE | S_IEXEC
 
- typedef enum{
+
+typedef enum{
     INIT,
     WORK,
 } prog_state_t;
@@ -67,6 +74,26 @@ static void error_handler(void){
     endwin();
     perror("");
     exit(errno);
+}
+
+static void log_error(const char * err_source){
+    FILE * fp = fopen(__LOG_PATH__, "a");
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    char log_str[LOG_BUFF_SIZE] = {0};
+     if(fp <= NULL){
+         int ret = mkdir(LOG_DIR, RE_WR_EX);
+         if(ret < 0) {
+             printf("Unable to create directory\n");
+             exit(1);
+         }
+        fp = fopen(__LOG_PATH__, "w");
+
+     }
+    snprintf(log_str, sizeof(log_str), "\r%d-%02d-%02d %02d:%02d:%02d >> Error: %d, source: %s",
+             tm->tm_year+1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec, errno, err_source );
+    fprintf(fp, log_str);
+    fclose(fp);
 }
 
 static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
@@ -194,6 +221,7 @@ int main(void) {
     initscr();
     while(!isSigTerm){
     //for(int i = 0; i < 10; i++){
+        //log_error(__func__ );
         load_cpuStats(CpuStats, &cpu_num);
         if(errno > 0){
             error_handler();
