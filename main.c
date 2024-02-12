@@ -14,14 +14,29 @@
 #include <string.h>
 #include <time.h>
 
+
+
+
 #define     DEBUG 1u
 #define     BUFF_SIZE 256
 #define     MAX_CORES_NUM 12
 #define     LOG_DIR "logs"
+#define     LOG_FILE "log.txt"
 #define     __LOG_PATH__  "logs/log.txt"
 #define     LOG_BUFF_SIZE 50
 #define     RE_WR_EX S_IREAD | S_IWRITE | S_IEXEC
+#define     MSG_ERR "ERROR"
+#define     LOG_PATH_LEN 50
 
+uint8_t * session = NULL;
+uint8_t * log_path = NULL;
+
+ static const char title[] = "                                                      __                  __            \n"
+                            "  _________  __  __   __  ___________ _____ ____     / /__________ ______/ /_____  _____\n"
+                            " / ___/ __ \\/ / / /  / / / / ___/ __ `/ __ `/ _ \\   / __/ ___/ __ `/ ___/ //_/ _ \\/ ___/\n"
+                            "/ /__/ /_/ / /_/ /  / /_/ (__  / /_/ / /_/ /  __/  / /_/ /  / /_/ / /__/ ,< /  __/ /    \n"
+                            "\\___/ .___/\\__,_/   \\__,_/____/\\__,_/\\__, /\\___/   \\__/_/   \\__,_/\\___/_/|_|\\___/_/     \n"
+                            "   /_/                              /____/                                              ";
 
 typedef enum{
     INIT,
@@ -76,25 +91,54 @@ static void error_handler(void){
     exit(errno);
 }
 
-static void log_error(const char * err_source){
-    FILE * fp = fopen(__LOG_PATH__, "a");
-    time_t t = time(NULL);
-    struct tm *tm = localtime(&t);
-    char log_str[LOG_BUFF_SIZE] = {0};
-     if(fp <= NULL){
-         int ret = mkdir(LOG_DIR, RE_WR_EX);
-         if(ret < 0) {
-             printf("Unable to create directory\n");
-             exit(1);
-         }
-        fp = fopen(__LOG_PATH__, "w");
+static void put_to_log(const char* msg_type, const char* desc){
+    FILE * log_file_p = fopen(log_path, "a");
+    time_t utimestamp = time(NULL); 
 
-     }
-    snprintf(log_str, sizeof(log_str), "\r%d-%02d-%02d %02d:%02d:%02d >> Error: %d, source: %s",
-             tm->tm_year+1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec, errno, err_source );
-    fprintf(fp, log_str);
-    fclose(fp);
+    if((void *)log_file_p > NULL){
+        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+    } else {
+        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+        
+    }
+    fclose(log_file_p);
 }
+
+static void set_path(){
+    log_path = malloc(sizeof(uint8_t) * LOG_PATH_LEN + 1);
+    sprintf(log_path, "%s/LOG%s.txt", LOG_DIR, session);
+}
+
+static void create_log_file(){
+    FILE * log_file_p = fopen(log_path, "w");
+    fclose(log_file_p);
+
+}
+
+static void set_session_time(){
+
+    time_t utimestamp = time(NULL);
+    struct tm *tm = localtime(&utimestamp);
+    uint8_t buffer[20] = {0};
+    sprintf(buffer, "%d-%02d-%02d_%02d:%02d:%02d", tm->tm_year+1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+    session = malloc(strlen(buffer) + 1);
+    strcpy(session, buffer);
+}
+
+static uint8_t check_log_ava(){
+
+    if(access(LOG_DIR, F_OK) != 0){
+        mkdir(LOG_DIR, RE_WR_EX);
+        create_log_file();
+    } else {
+        if(access(log_path, F_OK) != 0) {
+        create_log_file(); 
+    }
+    }
+
+}
+
 
 static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
     char* ret = 0;
@@ -149,7 +193,7 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
                    &pCpuRaw->ioWait, &pCpuRaw->irq, &pCpuRaw->softIrq, &pCpuRaw->steal,
                    &pCpuRaw->guest, &pCpuRaw->guestNice);
         }
-        //free(buffer_arr);
+        free(buffer_arr);
     }
     return;
 }
@@ -191,16 +235,19 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
 }
 
 static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
-    printw("%-12s %-12s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
+    printw("%s\n", title);
+    printw("--------------------------------------------------------------------------------------------\n");
+
+    printw("%-14s %-12s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
     cpu_stats_calc_t *  pCpuCalc = {0};
     pCpuCalc = &pCpuStats[0].cpuStats_view;
 
-    printw("\rcpu%-10s %-10.2f %-10u %-10u \n", "", pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
+    printw("\rcpu%-12s %-12.2f %-10u %-10u \n", "", pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
            pCpuCalc->nonIdleCurr);
 
     for(uint8_t i=1; i <  *pCpuNum; i++) {
         pCpuCalc = &pCpuStats[i].cpuStats_view;
-        printw("\rcpu%-10u %-10.2f %-10u %-10u \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
+        printw("\rcpu%-12u %-12.2f %-10u %-10u \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
                pCpuCalc->nonIdleCurr);
     }
     move(0,0);
@@ -218,10 +265,17 @@ int main(void) {
     errno = 0;
     volatile uint8_t cpu_num = 12u;
     cpu_stats_object_t *  CpuStats = {0};
+    
+    set_session_time();
+    set_path();
+
+    check_log_ava();
+    put_to_log("STATUS", "initialization");
+#if DEBUG == 1u
+#else
+
     initscr();
     while(!isSigTerm){
-    //for(int i = 0; i < 10; i++){
-        //log_error(__func__ );
         load_cpuStats(CpuStats, &cpu_num);
         if(errno > 0){
             error_handler();
@@ -244,8 +298,12 @@ int main(void) {
         select(1,&inp,0,0,&(struct timeval){.tv_sec=1});
         //sleep(1);
     }
+    
     endwin();
-    printf("\r\nProgram terminated.\n");
+#endif /* if DEBUG  == 1u */
+    put_to_log("STATUS", "terminating");
     free(CpuStats);
+    free(session);
+    free(log_path);
     return 0;
 }
