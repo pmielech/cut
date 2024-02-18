@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <ncurses.h>
 #include <signal.h>
 #include <dirent.h>
@@ -28,8 +29,6 @@
 #define     MSG_ERR "ERROR"
 #define     LOG_PATH_LEN 50
 
-uint8_t * session = NULL;
-uint8_t * log_path = NULL;
 
  static const char title[] = "                                                      __                  __            \n"
                             "  _________  __  __   __  ___________ _____ ____     / /__________ ______/ /_____  _____\n"
@@ -41,9 +40,15 @@ uint8_t * log_path = NULL;
 typedef enum{
     INIT,
     WORK,
+    LOGGER,
+    READER,
+    ANALYZER,
+    PRINTER,
+    TERMINATING
 } prog_state_t;
+ 
 
- typedef struct cpu_stats{
+typedef struct cpu_stats{
     uint32_t user;
     uint32_t nice;
     uint32_t system;
@@ -75,12 +80,25 @@ typedef struct cpu_stats_object{
     cpu_stats_calc_t cpuStats_view;
 } cpu_stats_object_t;
 
-static volatile prog_state_t program_state = INIT;
+static volatile uint8_t cpu_num = 12u;
+static volatile prog_state_t program_state;
 static volatile sig_atomic_t isSigTerm = 0;
+uint8_t * session = NULL;
+uint8_t * log_path = NULL;
+pthread_mutex_t cpu_stats_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cpu_stats_cond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t current_state_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t current_state_cond = PTHREAD_COND_INITIALIZER;
 
+
+void update_state(prog_state_t state){
+        program_state = state;
+        pthread_cond_signal(&current_state_cond);
+}
 static void sigTerm_handler(int signum){
     if(signum > 0){
         isSigTerm = 1;
+        update_state(TERMINATING);
     }
 }
 
@@ -90,6 +108,7 @@ static void error_handler(void){
     perror("");
     exit(errno);
 }
+
 
 static void put_to_log(const char* msg_type, const char* desc){
     FILE * log_file_p = fopen(log_path, "a");
@@ -138,6 +157,7 @@ static uint8_t check_log_ava(){
     }
 
 }
+
 
 
 static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
@@ -253,6 +273,68 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pC
     move(0,0);
     refresh();
 }
+
+static void* readerThread_func(){
+//TODO
+
+}
+
+const char* get_state_char(prog_state_t current_state){
+
+    switch(current_state)
+    {
+        case INIT:
+            return "INIT";
+        case WORK:
+            return "WORK";
+        case LOGGER:
+            return "LOGGER";
+        case READER:
+            return "READER";
+        case ANALYZER:
+            return "ANALYZER";
+        case PRINTER:
+            return "PRINTER";
+        case TERMINATING:
+            return "TERMINATING";
+        default:
+            return "404";
+    }
+
+}
+
+static void* loggerThread_func(){
+
+    set_session_time();
+    set_path();
+    check_log_ava();
+    put_to_log("STATUS", "logger thread started");
+    
+    do {
+        pthread_mutex_lock(&current_state_lock);
+        pthread_cond_wait(&current_state_cond, &current_state_lock);
+        put_to_log("STATUS", get_state_char(program_state));
+        pthread_mutex_unlock(&current_state_lock);
+    } while(!isSigTerm);
+    // while(!isSigTerm){
+    //     pthread_mutex_lock(&current_state_lock);
+    //     put_to_log("STATUS", get_state_char(program_state));
+    //     pthread_cond_wait(&current_state_cond, &current_state_lock);
+    //     pthread_mutex_unlock(&current_state_lock);
+    //         
+    // }
+}
+
+static void* printerThread_func(){
+    // init_scr();
+
+    while(1){
+
+    }
+
+
+}
+
 int main(void) {
     fd_set inp; FD_ZERO(&inp); FD_SET(STDIN_FILENO,&inp); // select func
 
@@ -261,20 +343,23 @@ int main(void) {
     sigTerm_action.sa_handler = sigTerm_handler;
     sigaction(SIGTERM, &sigTerm_action, NULL);
     sigaction(SIGINT, &sigTerm_action, NULL);
-
+    // signal(SIGTERM | SIGINT, sigTerm_handler);
     errno = 0;
-    volatile uint8_t cpu_num = 12u;
-    cpu_stats_object_t *  CpuStats = {0};
+    // volatile uint8_t cpu_num = 12u;
+    // cpu_stats_object_t *  CpuStats = {0};
     
-    set_session_time();
-    set_path();
+    pthread_t log_thread;
+    pthread_create(&log_thread, NULL, loggerThread_func, NULL);
+    sleep(1);
+    update_state(INIT);
 
-    check_log_ava();
-    put_to_log("STATUS", "initialization");
+    cpu_stats_object_t *  CpuStats = {0};
+
+    // check_log_ava();
+    // put_to_log("STATUS", "initialization");
 #if DEBUG == 1u
 #else
 
-    initscr();
     while(!isSigTerm){
         load_cpuStats(CpuStats, &cpu_num);
         if(errno > 0){
@@ -301,7 +386,10 @@ int main(void) {
     
     endwin();
 #endif /* if DEBUG  == 1u */
-    put_to_log("STATUS", "terminating");
+    // pthread_exit(NULL);
+    pthread_join(log_thread, NULL);
+    printf("END\n");
+    pthread_exit(NULL);
     free(CpuStats);
     free(session);
     free(log_path);
