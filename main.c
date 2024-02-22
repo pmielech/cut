@@ -89,11 +89,11 @@ pthread_mutex_t cpu_stats_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cpu_stats_cond = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t current_state_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t current_state_cond = PTHREAD_COND_INITIALIZER;
-
+FILE * log_file;
 
 void update_state(prog_state_t state){
         program_state = state;
-        pthread_cond_signal(&current_state_cond);
+        pthread_cond_broadcast(&current_state_cond);
 }
 static void sigTerm_handler(int signum){
     if(signum > 0){
@@ -109,18 +109,43 @@ static void error_handler(void){
     exit(errno);
 }
 
+const char* get_state_char(prog_state_t current_state){
+
+    switch(current_state)
+    {
+        case INIT:
+            return "INIT";
+        case WORK:
+            return "WORK";
+        case LOGGER:
+            return "LOGGER";
+        case READER:
+            return "READER";
+        case ANALYZER:
+            return "ANALYZER";
+        case PRINTER:
+            return "PRINTER";
+        case TERMINATING:
+            return "TERMINATING";
+        default:
+            return "404";
+    }
+
+}
+
 
 static void put_to_log(const char* msg_type, const char* desc){
-    FILE * log_file_p = fopen(log_path, "a");
+    // FILE * log_file_p = fopen(log_path, "a");
     time_t utimestamp = time(NULL); 
 
-    if((void *)log_file_p > NULL){
-        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+    if((void *)log_file > NULL){
+        fprintf(log_file, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
     } else {
-        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+        fprintf(log_file, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
         
     }
-    fclose(log_file_p);
+    fflush(log_file);
+    // fclose(log_file_p);
 }
 
 static void set_path(){
@@ -129,9 +154,10 @@ static void set_path(){
 }
 
 static void create_log_file(){
-    FILE * log_file_p = fopen(log_path, "w");
-    fclose(log_file_p);
-
+    log_file = fopen(log_path, "w");
+    fclose(log_file);
+    log_file = fopen(log_path, "a");
+    
 }
 
 static void set_session_time(){
@@ -274,64 +300,70 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pC
     refresh();
 }
 
-static void* readerThread_func(){
-//TODO
-
-}
-
-const char* get_state_char(prog_state_t current_state){
-
-    switch(current_state)
-    {
-        case INIT:
-            return "INIT";
-        case WORK:
-            return "WORK";
-        case LOGGER:
-            return "LOGGER";
-        case READER:
-            return "READER";
-        case ANALYZER:
-            return "ANALYZER";
-        case PRINTER:
-            return "PRINTER";
-        case TERMINATING:
-            return "TERMINATING";
-        default:
-            return "404";
-    }
-
-}
-
-static void* loggerThread_func(){
-
+static void* loggerThread_func(void){
     set_session_time();
     set_path();
     check_log_ava();
-    put_to_log("STATUS", "logger thread started");
-    
-    do {
+   
+    while(!isSigTerm){
         pthread_mutex_lock(&current_state_lock);
         pthread_cond_wait(&current_state_cond, &current_state_lock);
+        if(program_state == TERMINATING){
+            put_to_log("STATUS", get_state_char(program_state));
+            pthread_mutex_unlock(&current_state_lock);
+            pthread_exit(NULL);
+        }
         put_to_log("STATUS", get_state_char(program_state));
         pthread_mutex_unlock(&current_state_lock);
-    } while(!isSigTerm);
-    // while(!isSigTerm){
-    //     pthread_mutex_lock(&current_state_lock);
-    //     put_to_log("STATUS", get_state_char(program_state));
-    //     pthread_cond_wait(&current_state_cond, &current_state_lock);
-    //     pthread_mutex_unlock(&current_state_lock);
-    //         
-    // }
-}
-
-static void* printerThread_func(){
-    // init_scr();
-
-    while(1){
-
     }
 
+    // do {
+    //     pthread_mutex_lock(&current_state_lock);
+    //     pthread_cond_wait(&current_state_cond, &current_state_lock);
+    //     // put_to_log("STATUS", get_state_char(program_state));
+    //     printf("state: %s\n", get_state_char(program_state));
+    //     pthread_mutex_unlock(&current_state_lock);
+    // } while(!isSigTerm);
+
+    pthread_exit(NULL);
+}
+
+static void* readerThread_func(void){
+//TODO
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != READER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            if(program_state == TERMINATING){
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
+        // update_state(PRINTER);
+        pthread_mutex_unlock(&current_state_lock);
+            
+    }
+    pthread_exit(NULL);
+}
+
+static void* printerThread_func(void){
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != PRINTER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            if(program_state == TERMINATING){
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
+        // update_state(READER);
+        pthread_mutex_unlock(&current_state_lock);
+
+    }
+    pthread_exit(NULL);
+}
+
+static void* watchdogThread_func(void){
 
 }
 
@@ -348,16 +380,27 @@ int main(void) {
     // volatile uint8_t cpu_num = 12u;
     // cpu_stats_object_t *  CpuStats = {0};
     
-    pthread_t log_thread;
+    pthread_t log_thread, reader_thread, printer_thread, watchdog_thread;
+
     pthread_create(&log_thread, NULL, loggerThread_func, NULL);
     sleep(1);
+    pthread_mutex_lock(&current_state_lock);
     update_state(INIT);
-
-    cpu_stats_object_t *  CpuStats = {0};
-
-    // check_log_ava();
-    // put_to_log("STATUS", "initialization");
+    pthread_mutex_unlock(&current_state_lock);
+    
+    pthread_create(&reader_thread, NULL, readerThread_func,  NULL);
+    pthread_create(&printer_thread, NULL, printerThread_func, NULL);
+    
+    // cpu_stats_object_t *  CpuStats = {0};
 #if DEBUG == 1u
+    pthread_mutex_lock(&current_state_lock);
+    update_state(PRINTER);
+
+    while(program_state != TERMINATING){
+        pthread_cond_wait(&current_state_cond, &current_state_lock);
+    }
+    pthread_mutex_unlock(&current_state_lock);
+    // }
 #else
 
     while(!isSigTerm){
@@ -386,11 +429,11 @@ int main(void) {
     
     endwin();
 #endif /* if DEBUG  == 1u */
-    // pthread_exit(NULL);
+    pthread_join(reader_thread, NULL);
+    pthread_join(printer_thread,  NULL);
     pthread_join(log_thread, NULL);
-    printf("END\n");
-    pthread_exit(NULL);
-    free(CpuStats);
+    // free(CpuStats);
+    fclose(log_file);
     free(session);
     free(log_path);
     return 0;

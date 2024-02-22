@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD 11)
 
 set(MY_DOWNLOAD_PATH "${PROJECT_SOURCE_DIR}/include")
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
-
+add_library(pthread STATIC IMPORTED)
 INSTALL (
         DIRECTORY ${CMAKE_SOURCE_DIR}/include/
         DESTINATION include
