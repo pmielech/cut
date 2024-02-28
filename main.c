@@ -16,19 +16,12 @@
 #include <time.h>
 
 
-
-
 #define     DEBUG 1u
 #define     BUFF_SIZE 256
-#define     MAX_CORES_NUM 12
 #define     LOG_DIR "logs"
-#define     LOG_FILE "log.txt"
-#define     __LOG_PATH__  "logs/log.txt"
-#define     LOG_BUFF_SIZE 50
 #define     RE_WR_EX S_IREAD | S_IWRITE | S_IEXEC
-#define     MSG_ERR "ERROR"
 #define     LOG_PATH_LEN 50
-
+#define     MAX_CPU_NUM 64
 
  static const char title[] = "                                                      __                  __            \n"
                             "  _________  __  __   __  ___________ _____ ____     / /__________ ______/ /_____  _____\n"
@@ -39,12 +32,15 @@
 
 typedef enum{
     INIT,
+    INIT_SUCCESS,
+    INIT_FAILED,
+    TERMINATING,
+    INFO,
     WORK,
     LOGGER,
     READER,
     ANALYZER,
     PRINTER,
-    TERMINATING
 } prog_state_t;
  
 
@@ -80,20 +76,22 @@ typedef struct cpu_stats_object{
     cpu_stats_calc_t cpuStats_view;
 } cpu_stats_object_t;
 
-static volatile uint8_t cpu_num = 12u;
+static pthread_mutex_t cpu_stats_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cpu_stats_cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t current_state_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t current_state_cond = PTHREAD_COND_INITIALIZER;
+
 static volatile prog_state_t program_state;
 static volatile sig_atomic_t isSigTerm = 0;
-uint8_t * session = NULL;
-uint8_t * log_path = NULL;
-pthread_mutex_t cpu_stats_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t cpu_stats_cond = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t current_state_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t current_state_cond = PTHREAD_COND_INITIALIZER;
+static uint8_t * session = NULL;
+static uint8_t * log_path = NULL;
+static FILE * log_file;
+static cpu_stats_object_t *  CpuStats = {0};
+static volatile int cpu_num = MAX_CPU_NUM;
 
-
-void update_state(prog_state_t state){
+static void update_state(prog_state_t state){
         program_state = state;
-        pthread_cond_signal(&current_state_cond);
+        pthread_cond_broadcast(&current_state_cond);
 }
 static void sigTerm_handler(int signum){
     if(signum > 0){
@@ -103,38 +101,65 @@ static void sigTerm_handler(int signum){
 }
 
 static void error_handler(void){
-    // temporary error handler for debug purposes
     endwin();
     perror("");
     exit(errno);
 }
 
+const char* get_state_char(prog_state_t current_state){
 
-static void put_to_log(const char* msg_type, const char* desc){
-    FILE * log_file_p = fopen(log_path, "a");
-    time_t utimestamp = time(NULL); 
-
-    if((void *)log_file_p > NULL){
-        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
-    } else {
-        fprintf(log_file_p, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
-        
+    switch(current_state)
+    {
+        case INIT:
+            return "INIT";
+        case INIT_SUCCESS:
+            return "INIT_SUCCESS";
+        case WORK:
+            return "WORK";
+        case LOGGER:
+            return "LOGGER";
+        case READER:
+            return "READER";
+        case ANALYZER:
+            return "ANALYZER";
+        case PRINTER:
+            return "PRINTER";
+        case TERMINATING:
+            return "TERMINATING";
+        default:
+            return "INFO";
     }
-    fclose(log_file_p);
+
 }
 
-static void set_path(){
+
+static void put_to_log(const char* msg_type, const char* desc){
+    // FILE * log_file_p = fopen(log_path, "a");
+    time_t utimestamp = time(NULL); 
+
+    if((void *)log_file > NULL){
+        fprintf(log_file, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+    } else {
+        fprintf(log_file, "%.24s => %s : %s \n\r", ctime(&utimestamp), msg_type, desc);
+        
+    }
+    fflush(log_file);
+    // fclose(log_file_p);
+}
+
+static void set_path(void){
     log_path = malloc(sizeof(uint8_t) * LOG_PATH_LEN + 1);
     sprintf(log_path, "%s/LOG%s.txt", LOG_DIR, session);
 }
 
-static void create_log_file(){
-    FILE * log_file_p = fopen(log_path, "w");
-    fclose(log_file_p);
-
+static void create_log_file(void){
+    log_file = fopen(log_path, "w");
+    fclose(log_file);
+    log_file = fopen(log_path, "a");
+    
 }
 
-static void set_session_time(){
+static void set_session_time(void){
 
     time_t utimestamp = time(NULL);
     struct tm *tm = localtime(&utimestamp);
@@ -142,25 +167,29 @@ static void set_session_time(){
     sprintf(buffer, "%d-%02d-%02d_%02d:%02d:%02d", tm->tm_year+1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
 
     session = malloc(strlen(buffer) + 1);
-    strcpy(session, buffer);
+    strcpy((char*)session, (const char*)buffer);
 }
 
-static uint8_t check_log_ava(){
+static uint8_t check_log_ava(void){
 
     if(access(LOG_DIR, F_OK) != 0){
         mkdir(LOG_DIR, RE_WR_EX);
         create_log_file();
     } else {
-        if(access(log_path, F_OK) != 0) {
+        if(access((const char*)log_path, F_OK) != 0) {
         create_log_file(); 
     }
     }
 
 }
 
+static void allocate_stats_buf(void){
+    CpuStats = (cpu_stats_object_t *)malloc((sizeof(cpu_stats_object_t)) * (uint8_t)cpu_num);
+    memset(CpuStats, 0, (uint8_t)cpu_num * sizeof(cpu_stats_object_t));
+    program_state = WORK;
+}
 
-
-static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
+static void load_cpuStats(void){
     char* ret = 0;
     cpu_stats_raw_t *pCpuRaw = {0};
     FILE *fp;
@@ -174,60 +203,58 @@ static void load_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCp
     if(fp < 0 && errno > 0){
         error_handler();
     } else{
-        uint8_t cpu_number = *pCpuNum;
-        uint8_t buffer_arr[cpu_number][BUFF_SIZE];
-        memset(buffer_arr, 0, sizeof(buffer_arr));
 
-        uint8_t buffer[BUFF_SIZE] = {0};
-
+        int set_cpu_num = 0;
+        int buff_cpu_size;
         if(program_state == INIT){
-            *pCpuNum = 0;
+            buff_cpu_size = MAX_CPU_NUM;
+        } else {
+            buff_cpu_size = cpu_num;
         }
+        uint8_t buffer_arr[buff_cpu_size][BUFF_SIZE];
+        memset(buffer_arr, 0, sizeof(buffer_arr));
+        uint8_t buffer[BUFF_SIZE] = {0};
+        while(!isSigTerm){
 
-        for(int i = 0; i < cpu_number; i ++){
-            ret = fgets(buffer, sizeof(buffer), fp);
-            if (ret < 0) {
-                error_handler();
-            }
+            fgets((char*)buffer, sizeof(buffer), fp);
 
-            ret = strncmp(buffer, "cpu", 3) == 0 ? strncpy(buffer_arr[i], buffer, sizeof(buffer)) : 0;
+            ret = (strncmp((const char*)buffer, "cpu", 3) == 0 ? strncpy((char *)buffer_arr[set_cpu_num], (const char*)buffer, sizeof(buffer)) : 0);
             if (ret == 0) {
                 break;
+            } else {
+                set_cpu_num++; 
             }
-            if(program_state == INIT){
-                *pCpuNum+=1;
-            }
+
         }
         fclose(fp);
-
         if(program_state == INIT){
+            cpu_num = set_cpu_num;
             return;
         }
 
-        for(int i = 0; i < *pCpuNum; i++){
-            pCpuRaw = &pCpuStats[i].cpuStats_raw;
+        for(int i = 0; i < cpu_num; i++){
+            pCpuRaw = &CpuStats[i].cpuStats_raw;
 
-            sscanf(buffer_arr[i] + 5,
+            sscanf((const char *)(buffer_arr[i] + 5),
                    " %u %u %u %u %u %u %u %u %u %u",
                    &pCpuRaw->user, &pCpuRaw->nice, &pCpuRaw->system, &pCpuRaw->idle,
                    &pCpuRaw->ioWait, &pCpuRaw->irq, &pCpuRaw->softIrq, &pCpuRaw->steal,
                    &pCpuRaw->guest, &pCpuRaw->guestNice);
         }
-        free(buffer_arr);
     }
     return;
 }
 
-static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCpuNum){
+static void calculate_cpuStats(void){
     cpu_stats_raw_t  * pCpuRaw = {0};
     cpu_stats_raw_t * pCpuPrev = {0};
     cpu_stats_calc_t * pCpuCalc = {0};
 
-        for(int i = 0; i < *pCpuNum ; i++) {
+        for(int i = 0; i < cpu_num ; i++) {
             if(program_state != INIT) {
-                pCpuCalc = &pCpu[i].cpuStats_view;
-                pCpuRaw = &pCpu[i].cpuStats_raw;
-                pCpuPrev = &pCpu[i].cpuStats_prev;
+                pCpuCalc = &CpuStats[i].cpuStats_view;
+                pCpuRaw = &CpuStats[i].cpuStats_raw;
+                pCpuPrev = &CpuStats[i].cpuStats_prev;
 
                 pCpuCalc->idlePrev = (pCpuPrev->idle + pCpuPrev->ioWait);
                 pCpuCalc->idleCurr = (pCpuRaw->idle + pCpuRaw->ioWait);
@@ -247,26 +274,24 @@ static void calculate_cpuStats(cpu_stats_object_t * pCpu, volatile uint8_t * pCp
                     pCpuCalc->cpuPercentage = ((double )pCpuCalc->totalCalc - (double )pCpuCalc->idleCalc)* 100.0
                                                 / (double )pCpuCalc->totalCalc;
                 }
-            } else{
-                program_state = WORK;
             }
             memccpy(pCpuPrev, pCpuRaw, sizeof(cpu_stats_raw_t), sizeof(cpu_stats_raw_t));
     }
 }
 
-static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pCpuNum){
+
+static void print_cpuStats(void){
     printw("%s\n", title);
     printw("--------------------------------------------------------------------------------------------\n");
 
     printw("%-14s %-12s %-10s %-10s\n", "<CPU>", "TOTAL[%]", "IDLE", "NONIDLE");
-    cpu_stats_calc_t *  pCpuCalc = {0};
-    pCpuCalc = &pCpuStats[0].cpuStats_view;
+    cpu_stats_calc_t *  pCpuCalc = &CpuStats[0].cpuStats_view;
 
     printw("\rcpu%-12s %-12.2f %-10u %-10u \n", "", pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
            pCpuCalc->nonIdleCurr);
 
-    for(uint8_t i=1; i <  *pCpuNum; i++) {
-        pCpuCalc = &pCpuStats[i].cpuStats_view;
+    for(int i=1; i < cpu_num; i++) {
+        pCpuCalc = &CpuStats[i].cpuStats_view;
         printw("\rcpu%-12u %-12.2f %-10u %-10u \n", i, pCpuCalc->cpuPercentage, pCpuCalc->idleCalc,
                pCpuCalc->nonIdleCurr);
     }
@@ -274,65 +299,87 @@ static void print_cpuStats(cpu_stats_object_t * pCpuStats, volatile uint8_t * pC
     refresh();
 }
 
-static void* readerThread_func(){
-//TODO
-
-}
-
-const char* get_state_char(prog_state_t current_state){
-
-    switch(current_state)
-    {
-        case INIT:
-            return "INIT";
-        case WORK:
-            return "WORK";
-        case LOGGER:
-            return "LOGGER";
-        case READER:
-            return "READER";
-        case ANALYZER:
-            return "ANALYZER";
-        case PRINTER:
-            return "PRINTER";
-        case TERMINATING:
-            return "TERMINATING";
-        default:
-            return "404";
+static void* analyzerThread_func(void){
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != ANALYZER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            if(program_state == TERMINATING){
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
+        calculate_cpuStats();
+        update_state(PRINTER);
+        pthread_mutex_unlock(&current_state_lock);
+            
     }
-
+    pthread_exit(NULL);
 }
 
-static void* loggerThread_func(){
-
+static void* loggerThread_func(void){
     set_session_time();
     set_path();
     check_log_ava();
-    put_to_log("STATUS", "logger thread started");
-    
-    do {
+   
+    while(!isSigTerm){
         pthread_mutex_lock(&current_state_lock);
         pthread_cond_wait(&current_state_cond, &current_state_lock);
-        put_to_log("STATUS", get_state_char(program_state));
+        if((int)program_state <= (int)TERMINATING){
+            put_to_log("STATUS", get_state_char(program_state));
+            if(program_state == TERMINATING){
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
         pthread_mutex_unlock(&current_state_lock);
-    } while(!isSigTerm);
-    // while(!isSigTerm){
-    //     pthread_mutex_lock(&current_state_lock);
-    //     put_to_log("STATUS", get_state_char(program_state));
-    //     pthread_cond_wait(&current_state_cond, &current_state_lock);
-    //     pthread_mutex_unlock(&current_state_lock);
-    //         
-    // }
+    }
+    pthread_exit(NULL);
 }
 
-static void* printerThread_func(){
-    // init_scr();
+static void* readerThread_func(void){
+    load_cpuStats();
+    allocate_stats_buf();
+    update_state(INIT_SUCCESS);
+    sleep(1);
+    update_state(ANALYZER);
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != READER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            if(program_state == TERMINATING){
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
+        sleep(1);
+        load_cpuStats();
+        update_state(ANALYZER);
+        pthread_mutex_unlock(&current_state_lock);
+            
+    }
+    pthread_exit(NULL);
+}
 
-    while(1){
+static void* printerThread_func(void){
+    initscr();
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != PRINTER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            if(program_state == TERMINATING){
+                endwin();
+                pthread_mutex_unlock(&current_state_lock);
+                pthread_exit(NULL);
+            }
+        }
+        print_cpuStats(); 
+        update_state(READER);
+        pthread_mutex_unlock(&current_state_lock);
 
     }
-
-
+    endwin();
+    pthread_exit(NULL);
 }
 
 int main(void) {
@@ -343,54 +390,31 @@ int main(void) {
     sigTerm_action.sa_handler = sigTerm_handler;
     sigaction(SIGTERM, &sigTerm_action, NULL);
     sigaction(SIGINT, &sigTerm_action, NULL);
-    // signal(SIGTERM | SIGINT, sigTerm_handler);
     errno = 0;
-    // volatile uint8_t cpu_num = 12u;
-    // cpu_stats_object_t *  CpuStats = {0};
     
-    pthread_t log_thread;
+    pthread_t log_thread, reader_thread, analyzer_thread, printer_thread;
+
     pthread_create(&log_thread, NULL, loggerThread_func, NULL);
     sleep(1);
+    pthread_mutex_lock(&current_state_lock);
     update_state(INIT);
-
-    cpu_stats_object_t *  CpuStats = {0};
-
-    // check_log_ava();
-    // put_to_log("STATUS", "initialization");
-#if DEBUG == 1u
-#else
-
-    while(!isSigTerm){
-        load_cpuStats(CpuStats, &cpu_num);
-        if(errno > 0){
-            error_handler();
-        }
-        if(program_state == INIT){
-            CpuStats = (cpu_stats_object_t *)malloc((sizeof(cpu_stats_object_t)) * cpu_num);
-            memset(CpuStats, 0, cpu_num * sizeof(cpu_stats_object_t));
-            program_state = WORK;
-        } else {
-
-        calculate_cpuStats(CpuStats, &cpu_num);
-        if(errno > 0){
-            error_handler();
-        }
-        print_cpuStats(CpuStats, &cpu_num);
-        if(errno > 0){
-            error_handler();
-        }
-        }
-        select(1,&inp,0,0,&(struct timeval){.tv_sec=1});
-        //sleep(1);
-    }
+    pthread_mutex_unlock(&current_state_lock);
     
-    endwin();
-#endif /* if DEBUG  == 1u */
-    // pthread_exit(NULL);
+    pthread_create(&reader_thread, NULL, readerThread_func,  NULL);
+    pthread_create(&analyzer_thread, NULL, analyzerThread_func, NULL);
+    pthread_create(&printer_thread, NULL, printerThread_func, NULL);
+    
+    pthread_mutex_lock(&current_state_lock);
+    while(program_state != TERMINATING){
+        pthread_cond_wait(&current_state_cond, &current_state_lock);
+    }
+    pthread_mutex_unlock(&current_state_lock);
+    pthread_join(reader_thread, NULL);
+    pthread_join(printer_thread,  NULL);
     pthread_join(log_thread, NULL);
-    printf("END\n");
-    pthread_exit(NULL);
+    pthread_join(analyzer_thread, NULL);
     free(CpuStats);
+    fclose(log_file);
     free(session);
     free(log_path);
     return 0;

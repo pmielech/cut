@@ -1,19 +1,20 @@
-cmake_minimum_required(VERSION 3.26)
-project(cut C)
-set(CMAKE_C_STANDARD 11)
+cmake_minimum_required(VERSION 3.10)
 
+set(CMAKE_C_COMPILER clang)
+set(CMAKE_C_STANDARD 99)
+project(CpuUsageTracker VERSION 1.0)
 
-set(MY_DOWNLOAD_PATH "${PROJECT_SOURCE_DIR}/include")
-set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
-
-INSTALL (
-        DIRECTORY ${CMAKE_SOURCE_DIR}/include/
-        DESTINATION include
-        FILES_MATCHING PATTERN "*.h*")
+set(FLAGS -Weverything )
 
 find_package(Curses REQUIRED)
-include_directories(${CURSES_INCLUDE_DIR})
+find_package(Threads REQUIRED)
 
-add_executable(cut main.c)
-target_link_libraries(cut ${CURSES_LIBRARIES})
+include_directories(${CURSES_INCLUDE_DIR})
+include_directories(${THREADS_INCLUDE_DIR})
+
+set(LIBS ${CURSES_LIBRARIES} ${THREADS_LIBRARIES})
+
+add_executable(${PROJECT_NAME} main.c)
+
+target_link_libraries(${PROJECT_NAME} ${LIBS})
 
