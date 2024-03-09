@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+// #include <sys/signal.h>
+#include <signal.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <ncurses.h>
@@ -23,7 +25,10 @@
 #define     LOG_PATH_LEN 50
 #define     MAX_CPU_NUM 64
 
- static const char title[] = "                                                      __                  __            \n"
+
+
+
+static const char title[] = "                                                      __                  __            \n"
                             "  _________  __  __   __  ___________ _____ ____     / /__________ ______/ /_____  _____\n"
                             " / ___/ __ \\/ / / /  / / / / ___/ __ `/ __ `/ _ \\   / __/ ___/ __ `/ ___/ //_/ _ \\/ ___/\n"
                             "/ /__/ /_/ / /_/ /  / /_/ (__  / /_/ / /_/ /  __/  / /_/ /  / /_/ / /__/ ,< /  __/ /    \n"
@@ -76,10 +81,40 @@ typedef struct cpu_stats_object{
     cpu_stats_calc_t cpuStats_view;
 } cpu_stats_object_t;
 
+
+// function prototypes
+static void update_state(prog_state_t);
+static void sigTerm_handler(void);
+static void error_handler(void);
+static const char* get_state_char(prog_state_t current_state);
+static void put_to_log(const char* msg_type, const char* desc);
+static void set_path(void);
+static void send_to_logger(const char* msg);
+static void create_log_file(void);
+static void set_session_time(void);
+static uint8_t check_log_ava(void);
+static void allocate_stats_buf(void);
+static void load_cpuStats(void);
+static void calculate_cpuStats(void);
+static void print_cpuStats(void);
+static void* loggerThread_func(void);
+static void* readerThread_func(void);
+static void* analyzerThread_func(void);
+static void* printerThread_func(void);
+static void set_sig_handler(void);
+static void initialize_run(void);
+static void run_threads(void);
+static void shutting_down(void);
+
 static pthread_mutex_t cpu_stats_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cpu_stats_cond = PTHREAD_COND_INITIALIZER;
+
 static pthread_mutex_t current_state_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t current_state_cond = PTHREAD_COND_INITIALIZER;
+
+static pthread_mutex_t logger_wake_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t logger_wake_cond = PTHREAD_COND_INITIALIZER;
+
 
 static volatile prog_state_t program_state;
 static volatile sig_atomic_t isSigTerm = 0;
@@ -88,16 +123,24 @@ static uint8_t * log_path = NULL;
 static FILE * log_file;
 static cpu_stats_object_t *  CpuStats = {0};
 static volatile int cpu_num = MAX_CPU_NUM;
+static pthread_t log_thread, reader_thread, analyzer_thread, printer_thread ;
+static volatile uint8_t logger_wake = 0;
+static char logger_msg[50] = {0};
+
 
 static void update_state(prog_state_t state){
         program_state = state;
         pthread_cond_broadcast(&current_state_cond);
 }
-static void sigTerm_handler(int signum){
-    if(signum > 0){
-        isSigTerm = 1;
-        update_state(TERMINATING);
-    }
+
+static void sigTerm_handler(void){
+#if DEBUG == 1u
+    pthread_mutex_lock(&logger_wake_lock);
+    send_to_logger("DEBUG => SIGNAL CAUGHT");
+    pthread_mutex_unlock(&logger_wake_lock);
+#endif
+    isSigTerm = 1;
+    update_state(TERMINATING);
 }
 
 static void error_handler(void){
@@ -150,6 +193,12 @@ static void put_to_log(const char* msg_type, const char* desc){
 static void set_path(void){
     log_path = malloc(sizeof(uint8_t) * LOG_PATH_LEN + 1);
     sprintf(log_path, "%s/LOG%s.txt", LOG_DIR, session);
+}
+
+static void send_to_logger(const char* msg){
+    logger_wake = 1;
+    strcpy(logger_msg, msg);
+    pthread_cond_signal(&logger_wake_cond);
 }
 
 static void create_log_file(void){
@@ -299,41 +348,33 @@ static void print_cpuStats(void){
     refresh();
 }
 
-static void* analyzerThread_func(void){
-    while(!isSigTerm){
-        pthread_mutex_lock(&current_state_lock);
-        while(program_state != ANALYZER){
-            pthread_cond_wait(&current_state_cond, &current_state_lock);
-            if(program_state == TERMINATING){
-                pthread_mutex_unlock(&current_state_lock);
-                pthread_exit(NULL);
-            }
-        }
-        calculate_cpuStats();
-        update_state(PRINTER);
-        pthread_mutex_unlock(&current_state_lock);
-            
-    }
-    pthread_exit(NULL);
-}
+
 
 static void* loggerThread_func(void){
     set_session_time();
     set_path();
     check_log_ava();
    
-    while(!isSigTerm){
-        pthread_mutex_lock(&current_state_lock);
-        pthread_cond_wait(&current_state_cond, &current_state_lock);
-        if((int)program_state <= (int)TERMINATING){
-            put_to_log("STATUS", get_state_char(program_state));
-            if(program_state == TERMINATING){
-                pthread_mutex_unlock(&current_state_lock);
-                pthread_exit(NULL);
-            }
+    while(1){
+        pthread_mutex_lock(&logger_wake_lock);
+        pthread_cond_wait(&logger_wake_cond, &logger_wake_lock);
+        if(logger_wake == 1){
+            put_to_log("INFO", logger_msg);
+            logger_wake = 0;
         }
-        pthread_mutex_unlock(&current_state_lock);
+        pthread_mutex_unlock(&logger_wake_lock);
+
+        // if((int)program_state <= (int)TERMINATING){
+        //     put_to_log("STATUS", get_state_char(program_state));
+            // if(program_state == TERMINATING){
+            //     pthread_mutex_unlock(&current_state_lock);
+            //     printf("terminating logger\n");
+            //     pthread_exit(NULL);
+            // }
+        // }
+        // pthread_mutex_unlock(&logger_wake_lock);
     }
+    // put_to_log("STATUS", "Terminating");
     pthread_exit(NULL);
 }
 
@@ -347,14 +388,29 @@ static void* readerThread_func(void){
         pthread_mutex_lock(&current_state_lock);
         while(program_state != READER){
             pthread_cond_wait(&current_state_cond, &current_state_lock);
-            if(program_state == TERMINATING){
-                pthread_mutex_unlock(&current_state_lock);
-                pthread_exit(NULL);
-            }
         }
         sleep(1);
         load_cpuStats();
         update_state(ANALYZER);
+        pthread_mutex_unlock(&current_state_lock);
+            
+    }
+    pthread_exit(NULL);
+}
+
+
+static void* analyzerThread_func(void){
+    while(!isSigTerm){
+        pthread_mutex_lock(&current_state_lock);
+        while(program_state != ANALYZER){
+            pthread_cond_wait(&current_state_cond, &current_state_lock);
+            // if(program_state == TERMINATING){
+            //     pthread_mutex_unlock(&current_state_lock);
+            //     pthread_exit(NULL);
+            // }
+        }
+        calculate_cpuStats();
+        update_state(PRINTER);
         pthread_mutex_unlock(&current_state_lock);
             
     }
@@ -368,8 +424,8 @@ static void* printerThread_func(void){
         while(program_state != PRINTER){
             pthread_cond_wait(&current_state_cond, &current_state_lock);
             if(program_state == TERMINATING){
-                endwin();
                 pthread_mutex_unlock(&current_state_lock);
+                endwin();
                 pthread_exit(NULL);
             }
         }
@@ -382,37 +438,74 @@ static void* printerThread_func(void){
     pthread_exit(NULL);
 }
 
-int main(void) {
-    fd_set inp; FD_ZERO(&inp); FD_SET(STDIN_FILENO,&inp); // select func
+void set_sig_handler(void)
+{
+        struct sigaction sigTerm_action;
 
-    struct sigaction sigTerm_action = {0};
-    memset(&sigTerm_action, 0, sizeof(struct sigaction));
-    sigTerm_action.sa_handler = sigTerm_handler;
-    sigaction(SIGTERM, &sigTerm_action, NULL);
-    sigaction(SIGINT, &sigTerm_action, NULL);
-    errno = 0;
-    
-    pthread_t log_thread, reader_thread, analyzer_thread, printer_thread;
+        sigTerm_action.sa_flags = SA_SIGINFO; 
+        sigTerm_action.sa_sigaction = (void *)sigTerm_handler;
 
-    pthread_create(&log_thread, NULL, loggerThread_func, NULL);
-    sleep(1);
+        if (sigaction(SIGINT, &sigTerm_action, NULL) == -1) { 
+            perror("sigaction");
+            _exit(1);
+        }
+
+        if (sigaction(SIGTERM, &sigTerm_action, NULL) == -1) { 
+            perror("sigterm");
+            _exit(1);
+        }
+        if (sigaction(SIGQUIT, &sigTerm_action, NULL) == -1) { 
+            perror("sigquit");
+            _exit(1);
+        }
+
+}
+
+static void initialize_run(void){
+    pthread_mutex_lock(&logger_wake_lock);
+    send_to_logger("Program started");
+    pthread_mutex_unlock(&logger_wake_lock);
+
     pthread_mutex_lock(&current_state_lock);
     update_state(INIT);
     pthread_mutex_unlock(&current_state_lock);
+
+}
+
+static void run_threads(void){
+    pthread_create(&reader_thread, NULL,  (void*)readerThread_func,  NULL);
+    pthread_create(&analyzer_thread, NULL,(void*)analyzerThread_func, NULL);
+    pthread_create(&printer_thread, NULL, (void*)printerThread_func, NULL);
+    sleep(1);
+
+}
+
+static void shutting_down(void){
+    pthread_mutex_lock(&logger_wake_lock);
+    send_to_logger("Terminating");
+    pthread_mutex_unlock(&logger_wake_lock);
+    sleep(1);
+    // pthread_join(log_thread,  NULL);
+    pthread_kill(log_thread,  SIGTERM);
+    pthread_kill(reader_thread,  SIGTERM);
+    pthread_kill(analyzer_thread,SIGTERM);
+
+}
+
+int main(void) {
+
+	set_sig_handler();
+    errno = 0;
+
+    pthread_create(&log_thread, NULL, (void*)loggerThread_func, NULL);
+    sleep(1);
+    initialize_run();
     
-    pthread_create(&reader_thread, NULL, readerThread_func,  NULL);
-    pthread_create(&analyzer_thread, NULL, analyzerThread_func, NULL);
-    pthread_create(&printer_thread, NULL, printerThread_func, NULL);
+    run_threads();
     
-    pthread_mutex_lock(&current_state_lock);
-    while(program_state != TERMINATING){
-        pthread_cond_wait(&current_state_cond, &current_state_lock);
-    }
-    pthread_mutex_unlock(&current_state_lock);
-    pthread_join(reader_thread, NULL);
     pthread_join(printer_thread,  NULL);
-    pthread_join(log_thread, NULL);
-    pthread_join(analyzer_thread, NULL);
+    shutting_down();
+    
     free(CpuStats);
     fclose(log_file);
     free(session);
